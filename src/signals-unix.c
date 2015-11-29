@@ -76,7 +76,17 @@ static void segv_handler(int sig, siginfo_t *info, void *context)
     sigset_t sset;
     assert(sig == SIGSEGV);
 
-    if (in_jl_ || is_addr_on_stack(info->si_addr)) { // stack overflow, or restarting jl_
+#ifdef JULIA_ENABLE_THREADING
+    if (info->si_addr == jl_gc_signal_page) {
+        sigemptyset(&sset);
+        sigaddset(&sset, SIGSEGV);
+        sigprocmask(SIG_UNBLOCK, &sset, NULL);
+        jl_gc_signal_wait();
+        return;
+    }
+#endif
+    if (in_jl_ || is_addr_on_stack(info->si_addr)) {
+        // stack overflow, or restarting jl_
         sigemptyset(&sset);
         sigaddset(&sset, SIGSEGV);
         sigprocmask(SIG_UNBLOCK, &sset, NULL);

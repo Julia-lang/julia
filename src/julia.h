@@ -64,6 +64,17 @@ extern "C" {
 // JULIA_ENABLE_THREADING is switched on in Make.inc if JULIA_THREADS is
 // set (in Make.user)
 
+#ifdef JULIA_ENABLE_THREADING
+JL_DLLEXPORT extern volatile size_t *jl_gc_signal_page;
+STATIC_INLINE void jl_gc_safepoint(void)
+{
+    // This triggers a SegFault when we are in GC
+    *jl_gc_signal_page;
+}
+#else // JULIA_ENABLE_THREADING
+#define jl_gc_safepoint()
+#endif // JULIA_ENABLE_THREADING
+
 JL_DLLEXPORT int16_t jl_threadid(void);
 JL_DLLEXPORT void *jl_threadgroup(void);
 JL_DLLEXPORT void jl_cpu_pause(void);
@@ -101,7 +112,7 @@ JL_DLLEXPORT void jl_threading_profile(void);
     extern uint64_t volatile m ## _mutex;                                 \
     extern int32_t m ## _lock_count;
 
-#define JL_LOCK(m) do {                                                 \
+#define JL_LOCK_WAIT(m, wait_ex) do {                                   \
         if (m ## _mutex == uv_thread_self()) {                          \
             ++m ## _lock_count;                                         \
         }                                                               \
@@ -113,6 +124,7 @@ JL_DLLEXPORT void jl_threading_profile(void);
                     m ## _lock_count = 1;                               \
                     break;                                              \
                 }                                                       \
+                wait_ex;                                                \
                 jl_cpu_pause();                                         \
             }                                                           \
         }                                                               \
@@ -129,10 +141,15 @@ JL_DLLEXPORT void jl_threading_profile(void);
 #else
 #define JL_DEFINE_MUTEX(m)
 #define JL_DEFINE_MUTEX_EXT(m)
-#define JL_LOCK(m) do {} while (0)
+#define JL_LOCK_WAIT(m, wait_ex) do {} while (0)
 #define JL_UNLOCK(m) do {} while (0)
 #endif
 
+// JL_LOCK is a GC safe point while JL_LOCK_NOGC is not
+// Always use JL_LOCK unless no one holding the lock can trigger a GC or GC
+// safepoint. JL_LOCK_NOGC should only be needed for GC internal locks.
+#define JL_LOCK(m) JL_LOCK_WAIT(m, jl_gc_safepoint())
+#define JL_LOCK_NOGC(m) JL_LOCK_WAIT(m, )
 
 // core data types ------------------------------------------------------------
 
@@ -1413,6 +1430,12 @@ typedef struct _jl_task_t {
 typedef struct _jl_tls_states_t {
     jl_gcframe_t *pgcstack;
     jl_value_t *exception_in_transit;
+    // Whether it is safe to execute GC at the same time.
+    // gc_state = 1 means the thread is waiting for the GC to finish.
+    // gc_state = 3 means the thread is running unmanaged code that can be
+    //              execute at the same time with the GC.
+    volatile int8_t gc_state;
+    volatile int8_t in_gc;
     struct _jl_thread_heap_t *heap;
     jl_task_t *volatile current_task;
     jl_task_t *root_task;
@@ -1446,10 +1469,43 @@ JL_DLLEXPORT JL_CONST_FUNC jl_tls_states_t *(jl_get_ptls_states)(void);
 #ifndef JULIA_ENABLE_THREADING
 extern JL_DLLEXPORT jl_tls_states_t jl_tls_states;
 #define jl_get_ptls_states() (&jl_tls_states)
-#else
+STATIC_INLINE int8_t jl_gc_state_set(int8_t state, int8_t old_state)
+{
+    (void)state;
+    return old_state;
+}
+STATIC_INLINE int8_t jl_gc_state_save_and_set(int8_t state)
+{
+    (void)state;
+    return 0;
+}
+#define jl_gc_unsafe_enter() ((int8_t)0)
+#define jl_gc_unsafe_leave(state) ((void)state)
+#define JL_RETURN_NULL_IF_UNMANAGED() do {} while (0)
+#else // ifndef JULIA_ENABLE_THREADING
 typedef jl_tls_states_t *(*jl_get_ptls_states_func)(void);
 JL_DLLEXPORT void jl_set_ptls_states_getter(jl_get_ptls_states_func f);
-#endif
+STATIC_INLINE int8_t jl_gc_state_set(int8_t state, int8_t old_state)
+{
+    jl_get_ptls_states()->gc_state = state;
+    // A safe point is required if we transition from GC-safe region to
+    // non GC-safe region.
+    if (old_state && !state)
+        jl_gc_safepoint();
+    return old_state;
+}
+STATIC_INLINE int8_t jl_gc_state_save_and_set(int8_t state)
+{
+    return jl_gc_state_set(state, jl_get_ptls_states()->gc_state);
+}
+#define jl_gc_unsafe_enter() jl_gc_state_save_and_set(0)
+#define jl_gc_unsafe_leave(state) jl_gc_state_set((state), 0)
+#define JL_RETURN_NULL_IF_UNMANAGED() do {       \
+        if (jl_get_ptls_states()->gc_state) {    \
+            return NULL;                         \
+        }                                        \
+    } while (0)
+#endif // ifndef JULIA_ENABLE_THREADING
 
 STATIC_INLINE void jl_eh_restore_state(jl_handler_t *eh)
 {
