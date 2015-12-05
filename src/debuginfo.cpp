@@ -194,7 +194,9 @@ public:
     virtual void NotifyFunctionEmitted(const Function &F, void *Code,
                                        size_t Size, const EmittedFunctionDetails &Details)
     {
+        int8_t gc_state = jl_gc_state_save_and_set(3);
         uv_rwlock_wrlock(&threadsafe);
+        jl_gc_state_set(gc_state, 3);
 #if defined(_OS_WINDOWS_)
         create_PRUNTIME_FUNCTION((uint8_t*)Code, Size, F.getName(), (uint8_t*)Code, Size, NULL);
 #endif
@@ -205,7 +207,9 @@ public:
 
     std::map<size_t, FuncInfo, revcomp>& getMap()
     {
+        int8_t gc_state = jl_gc_state_save_and_set(3);
         uv_rwlock_rdlock(&threadsafe);
+        jl_gc_state_set(gc_state, 3);
         return info;
     }
 #endif // ifndef USE_MCJIT
@@ -218,7 +222,9 @@ public:
     virtual void NotifyObjectEmitted(const ObjectImage &obj)
 #endif
     {
+        int8_t gc_state = jl_gc_state_save_and_set(3);
         uv_rwlock_wrlock(&threadsafe);
+        jl_gc_state_set(gc_state, 3);
 #ifdef LLVM36
         object::section_iterator Section = obj.section_begin();
         object::section_iterator EndSection = obj.section_end();
@@ -451,7 +457,9 @@ public:
 
     std::map<size_t, ObjectInfo, revcomp>& getObjectMap()
     {
+        int8_t gc_state = jl_gc_state_save_and_set(3);
         uv_rwlock_rdlock(&threadsafe);
+        jl_gc_state_set(gc_state, 3);
         return objectmap;
     }
 #endif // USE_MCJIT
