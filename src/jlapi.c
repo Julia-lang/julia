@@ -328,6 +328,16 @@ JL_DLLEXPORT void (jl_gc_unsafe_leave)(int8_t state)
     jl_gc_unsafe_leave(state);
 }
 
+JL_DLLEXPORT int8_t (jl_gc_safe_enter)(void)
+{
+    return jl_gc_state_save_and_set(3);
+}
+
+JL_DLLEXPORT void (jl_gc_safe_leave)(int8_t state)
+{
+    jl_gc_state_set(state, 3);
+}
+
 #ifdef __cplusplus
 }
 #endif
